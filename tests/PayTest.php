@@ -255,6 +255,21 @@ it('returns the row as it stands when waiting runs out of time', function () {
     expect($settled['status'])->toBe('processing');
 });
 
+it('reaches every statement surface', function () {
+    Http::fake(['*' => Http::response(['object' => 'statement_import', 'settled' => 1, 'unmatched' => 0, 'replayed' => false], 201)]);
+
+    $imported = Pay::statements()->import([
+        'source' => 'mpesa',
+        'label' => 'March',
+        'rows' => [['receipt' => 'SLJ7', 'amount_minor' => 150000, 'paid_at' => '2026-09-22T00:00:00.000Z']],
+    ]);
+    Pay::statements()->get('01a0c5cd-0000-7000-8000-0000000000ff');
+    Pay::statements()->list(['limit' => 5]);
+
+    expect($imported['settled'])->toBe(1);
+    Http::assertSentCount(3);
+});
+
 describe('webhook verification', function () {
     $body = json_encode([
         'id' => '01a0c5cd-0000-7000-8000-0000000000cc',

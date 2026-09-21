@@ -11,6 +11,7 @@ use NoriaLabs\Pay\Resources\PaymentLinks;
 use NoriaLabs\Pay\Resources\PaymentMethods;
 use NoriaLabs\Pay\Resources\Payouts;
 use NoriaLabs\Pay\Resources\Refunds;
+use NoriaLabs\Pay\Resources\Statements;
 use NoriaLabs\Pay\Resources\Transactions;
 use NoriaLabs\Pay\Resources\Webhooks;
 
@@ -58,6 +59,11 @@ class Pay
     public function paymentLinks(): PaymentLinks
     {
         return new PaymentLinks($this);
+    }
+
+    public function statements(): Statements
+    {
+        return new Statements($this);
     }
 
     public function webhooks(): Webhooks
