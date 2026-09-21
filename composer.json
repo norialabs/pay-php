@@ -2,7 +2,15 @@
     "name": "norialabs/pay",
     "description": "Laravel SDK for Noria Pay: collect, pay out and refund across M-PESA, SasaPay and Paystack through one internal service instead of wiring a provider into every product.",
     "type": "library",
-    "keywords": ["laravel", "payments", "mpesa", "sasapay", "paystack", "kenya", "noria"],
+    "keywords": [
+        "laravel",
+        "payments",
+        "mpesa",
+        "sasapay",
+        "paystack",
+        "kenya",
+        "noria"
+    ],
     "license": "MIT",
     "homepage": "https://github.com/norialabs/pay",
     "support": {
@@ -41,16 +49,23 @@
         "analyse": "phpstan analyse --no-progress",
         "format": "pint",
         "format:test": "pint --test",
-        "test": "pest"
+        "test": "pest",
+        "test:coverage": "pest --coverage --min=90"
     },
     "extra": {
         "laravel": {
-            "providers": ["NoriaLabs\\Pay\\Providers\\PayServiceProvider"],
-            "aliases": { "Pay": "NoriaLabs\\Pay\\Facades\\Pay" }
+            "providers": [
+                "NoriaLabs\\Pay\\Providers\\PayServiceProvider"
+            ],
+            "aliases": {
+                "Pay": "NoriaLabs\\Pay\\Facades\\Pay"
+            }
         }
     },
     "config": {
-        "allow-plugins": { "pestphp/pest-plugin": true },
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        },
         "sort-packages": true
     },
     "minimum-stability": "stable",

@@ -172,6 +172,89 @@ it('refuses to construct without an api key', function () {
         ->toThrow(PayException::class);
 });
 
+it('reaches every transactions surface', function () {
+    Http::fake(['*' => Http::response(['object' => 'list', 'data' => [], 'next_cursor' => null])]);
+
+    Pay::transactions()->get('01a0c5cd-0000-7000-8000-0000000000aa');
+    Pay::transactions()->events('01a0c5cd-0000-7000-8000-0000000000aa', ['limit' => 10]);
+
+    $urls = [];
+    Http::assertSent(function (Request $request) use (&$urls): bool {
+        $urls[] = $request->url();
+
+        return true;
+    });
+
+    expect($urls[0])->toBe('https://pay.noria.test/v1/transactions/01a0c5cd-0000-7000-8000-0000000000aa')
+        ->and($urls[1])->toBe('https://pay.noria.test/v1/transactions/01a0c5cd-0000-7000-8000-0000000000aa/events?limit=10');
+});
+
+it('cancels a charge', function () {
+    Http::fake(['*' => Http::response(transaction(['status' => 'cancelled']))]);
+
+    expect(Pay::charges()->cancel('01a0c5cd-0000-7000-8000-0000000000aa')['status'])->toBe('cancelled');
+
+    Http::assertSent(fn (Request $request): bool => $request->method() === 'POST'
+        && str_ends_with($request->url(), '/v1/charges/01a0c5cd-0000-7000-8000-0000000000aa/cancel'));
+});
+
+it('reaches every payment method surface without ever reading a secret back', function () {
+    Http::fake(['*' => Http::response([
+        'id' => '01a0c5cd-0000-7000-8000-0000000000bb',
+        'object' => 'payment_method',
+        'provider' => 'daraja',
+        'configured' => true,
+        'config_hint' => ['consumer_secret' => '…alue'],
+        'callback_url' => 'https://pay.noria.test/webhooks/daraja/slug',
+    ])]);
+
+    Pay::paymentMethods()->list();
+    $set = Pay::paymentMethods()->set('daraja', ['label' => 'Paybill', 'channels' => ['mpesa'], 'config' => ['provider' => 'daraja']]);
+    Pay::paymentMethods()->verify('daraja');
+    Pay::paymentMethods()->remove('daraja');
+
+    expect($set['config_hint']['consumer_secret'])->toBe('…alue');
+    Http::assertSentCount(4);
+});
+
+it('reaches every payment link surface', function () {
+    Http::fake(['*' => Http::response(['id' => '01a0c5cd-0000-7000-8000-0000000000cc', 'object' => 'payment_link', 'token' => 'abc', 'url' => 'https://pay.noria.test/p/abc'])]);
+
+    $created = Pay::paymentLinks()->create(['title' => 'April rent', 'amount_minor' => 150000]);
+    Pay::paymentLinks()->get($created['id']);
+    Pay::paymentLinks()->list(['limit' => 5]);
+    Pay::paymentLinks()->update($created['id'], ['title' => 'May rent']);
+    Pay::paymentLinks()->close($created['id']);
+
+    expect($created['url'])->toBe('https://pay.noria.test/p/abc');
+    Http::assertSentCount(5);
+
+    Http::assertSent(fn (Request $request): bool => $request->method() !== 'PATCH' || $request['title'] === 'May rent');
+});
+
+it('reaches every webhook endpoint surface', function () {
+    Http::fake(['*' => Http::response(['id' => '01a0c5cd-0000-7000-8000-0000000000dd', 'object' => 'webhook_endpoint', 'secret' => 'whsec_shown_once'])]);
+
+    $created = Pay::webhooks()->create('https://hooks.test/pay', ['succeeded'], 'ledger');
+    Pay::webhooks()->list();
+    Pay::webhooks()->update($created['id'], ['enabled' => false]);
+    Pay::webhooks()->remove($created['id']);
+
+    expect($created['secret'])->toBe('whsec_shown_once');
+    Http::assertSentCount(4);
+
+    Http::assertSent(fn (Request $request): bool => $request->method() !== 'POST'
+        || ($request['event_types'] === ['succeeded'] && $request['description'] === 'ledger'));
+});
+
+it('returns the row as it stands when waiting runs out of time', function () {
+    Http::fake(['*' => Http::response(transaction())]);
+
+    $settled = Pay::waitForSettlement('01a0c5cd-0000-7000-8000-0000000000aa', 0, 0);
+
+    expect($settled['status'])->toBe('processing');
+});
+
 describe('webhook verification', function () {
     $body = json_encode([
         'id' => '01a0c5cd-0000-7000-8000-0000000000cc',
