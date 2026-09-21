@@ -1,0 +1,211 @@
+<?php
+
+use Illuminate\Http\Client\Factory;
+use Illuminate\Http\Client\Request;
+use Illuminate\Support\Facades\Http;
+use NoriaLabs\Pay\Exceptions\PayException;
+use NoriaLabs\Pay\Facades\Pay;
+use NoriaLabs\Pay\WebhookVerifier;
+
+const CHARGE = [
+    'amount_minor' => 150000,
+    'channel' => 'mpesa',
+    'reference' => 'INV-42',
+    'description' => 'April rent',
+    'payer_phone' => '0712345678',
+];
+
+function transaction(array $overrides = []): array
+{
+    return array_merge([
+        'id' => '01a0c5cd-0000-7000-8000-0000000000aa',
+        'object' => 'transaction',
+        'direction' => 'collection',
+        'status' => 'processing',
+        'currency' => 'KES',
+        'amount_minor' => 150000,
+        'settled_minor' => null,
+        'reference' => 'INV-42',
+        'next_action' => ['type' => 'await_payer', 'provider_ref' => 'ws_CO_1', 'payer_message' => 'Enter your PIN'],
+    ], $overrides);
+}
+
+it('sends the api key and the idempotency key', function () {
+    Http::fake([
+        'pay.noria.test/v1/charges' => Http::response(transaction(), 201),
+    ]);
+
+    Pay::charges()->create(CHARGE, 'invoice:42:1');
+
+    Http::assertSent(function (Request $request): bool {
+        expect($request->url())->toBe('https://pay.noria.test/v1/charges')
+            ->and($request->header('Authorization')[0])->toBe('Bearer pay_test_abcdefghijklmnopqrstuvwx')
+            ->and($request->header('Idempotency-Key')[0])->toBe('invoice:42:1')
+            ->and($request['amount_minor'])->toBe(150000);
+
+        return true;
+    });
+});
+
+it('records money that arrived off-rail', function () {
+    Http::fake([
+        'pay.noria.test/v1/charges/record' => Http::response(transaction(['status' => 'succeeded', 'settled_minor' => 250000]), 201),
+    ]);
+
+    $recorded = Pay::charges()->record([
+        'amount_minor' => 250000,
+        'channel' => 'cash',
+        'reference' => 'INV-7',
+        'description' => 'Counter payment',
+    ], 'cash:7');
+
+    expect($recorded['status'])->toBe('succeeded')
+        ->and($recorded['settled_minor'])->toBe(250000);
+});
+
+it('creates a payout and a refund', function () {
+    Http::fake([
+        'pay.noria.test/v1/payouts' => Http::response(transaction(['direction' => 'payout']), 201),
+        'pay.noria.test/v1/refunds' => Http::response(transaction(['direction' => 'refund']), 201),
+    ]);
+
+    expect(Pay::payouts()->create([
+        'amount_minor' => 500000,
+        'channel' => 'mpesa',
+        'reference' => 'PO-1',
+        'description' => 'Supplier',
+        'recipient_name' => 'Acme',
+        'recipient_phone' => '0712345678',
+    ], 'po:1')['direction'])->toBe('payout');
+
+    expect(Pay::refunds()->create([
+        'transaction_id' => '01a0c5cd-0000-7000-8000-0000000000aa',
+        'reason' => 'Duplicate',
+    ], 'rf:1')['direction'])->toBe('refund');
+});
+
+it('builds a query string and drops what is absent', function () {
+    Http::fake(['*' => Http::response(['object' => 'list', 'data' => [], 'next_cursor' => null])]);
+
+    Pay::transactions()->list(['direction' => 'collection', 'status' => null, 'limit' => 50]);
+
+    Http::assertSent(fn (Request $request): bool => $request->url() === 'https://pay.noria.test/v1/transactions?direction=collection&limit=50');
+});
+
+it('returns an empty array for a 204 rather than failing to decode it', function () {
+    Http::fake(['*' => Http::response(null, 204)]);
+
+    expect(fn () => Pay::paymentMethods()->remove('daraja'))->not->toThrow(PayException::class);
+});
+
+it('carries the service error code, status and request id', function () {
+    Http::fake([
+        '*' => Http::response([
+            'error' => ['code' => 'idempotency_mismatch', 'message' => 'Already used', 'request_id' => 'req_1'],
+        ], 409),
+    ]);
+
+    try {
+        Pay::charges()->create(CHARGE, 'k-1');
+        $this->fail('expected the request to be refused');
+    } catch (PayException $exception) {
+        expect($exception->errorCode)->toBe('idempotency_mismatch')
+            ->and($exception->status)->toBe(409)
+            ->and($exception->requestId)->toBe('req_1');
+    }
+});
+
+// 504 is normally retryable. Here it means the charge may already have taken the payer's
+// money, so the client surfaces it once instead of sending it again.
+it('never retries an unknown outcome and names the transaction to poll', function () {
+    Http::fake([
+        '*' => Http::response([
+            'error' => [
+                'code' => 'outcome_unknown',
+                'message' => 'The provider did not answer in time',
+                'details' => ['transaction_id' => '01a0c5cd-0000-7000-8000-0000000000aa'],
+            ],
+        ], 504),
+    ]);
+
+    try {
+        Pay::charges()->create(CHARGE, 'k-2');
+        $this->fail('expected the request to be refused');
+    } catch (PayException $exception) {
+        expect($exception->isOutcomeUnknown())->toBeTrue()
+            ->and($exception->isRetryable())->toBeFalse()
+            ->and($exception->transactionId())->toBe('01a0c5cd-0000-7000-8000-0000000000aa');
+    }
+
+    Http::assertSentCount(1);
+});
+
+it('does not retry a provider rejection, which is definite', function () {
+    Http::fake(['*' => Http::response(['error' => ['code' => 'provider_rejected', 'message' => 'Bad amount']], 502)]);
+
+    expect(fn () => Pay::charges()->create(CHARGE, 'k-3'))->toThrow(PayException::class);
+    Http::assertSentCount(1);
+});
+
+it('retries a 503 and returns the eventual success', function () {
+    Http::fakeSequence()
+        ->push(['error' => ['code' => 'internal_error', 'message' => 'down']], 503)
+        ->push(transaction(), 201);
+
+    expect(Pay::charges()->create(CHARGE, 'k-4')['status'])->toBe('processing');
+    Http::assertSentCount(2);
+});
+
+it('waits for settlement and stops as soon as it is terminal', function () {
+    Http::fakeSequence()
+        ->push(transaction(), 200)
+        ->push(transaction(['status' => 'succeeded', 'settled_minor' => 150000]), 200);
+
+    $settled = Pay::waitForSettlement('01a0c5cd-0000-7000-8000-0000000000aa', 30, 0);
+
+    expect($settled['status'])->toBe('succeeded');
+    Http::assertSentCount(2);
+});
+
+it('refuses to construct without an api key', function () {
+    expect(fn () => new NoriaLabs\Pay\Pay(app(Factory::class), ''))
+        ->toThrow(PayException::class);
+});
+
+describe('webhook verification', function () {
+    $body = json_encode([
+        'id' => '01a0c5cd-0000-7000-8000-0000000000cc',
+        'type' => 'succeeded',
+        'data' => ['reference' => 'INV-42', 'settled_minor' => 150000, 'provider_receipt' => 'SLJ7AB99XY'],
+    ]);
+
+    $sign = fn (string $payload, int $at): string => 't='.$at.',v1='.hash_hmac('sha256', $at.'.'.$payload, 'whsec_testsecret');
+
+    it('accepts a correctly signed payload', function () use ($body, $sign) {
+        $verifier = app(WebhookVerifier::class);
+        $event = $verifier->verify($body, $sign($body, 1790000000), 1790000000);
+
+        expect($event['type'])->toBe('succeeded')
+            ->and($event['data']['provider_receipt'])->toBe('SLJ7AB99XY');
+    });
+
+    it('rejects a body altered after signing', function () use ($body, $sign) {
+        $verifier = app(WebhookVerifier::class);
+        $tampered = str_replace('150000', '1', $body);
+
+        expect(fn () => $verifier->verify($tampered, $sign($body, 1790000000), 1790000000))
+            ->toThrow(PayException::class, 'Invalid webhook signature');
+    });
+
+    it('rejects a replay outside the tolerance', function () use ($body, $sign) {
+        $verifier = app(WebhookVerifier::class);
+
+        expect(fn () => $verifier->verify($body, $sign($body, 1789990000), 1790000000))
+            ->toThrow(PayException::class, 'Signature timestamp is outside the tolerance window');
+    });
+
+    it('rejects a malformed header', function () use ($body) {
+        expect(fn () => app(WebhookVerifier::class)->verify($body, 'nonsense'))
+            ->toThrow(PayException::class, 'Malformed pay-signature header');
+    });
+});

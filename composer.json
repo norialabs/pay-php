@@ -1,0 +1,58 @@
+{
+    "name": "norialabs/pay",
+    "description": "Laravel SDK for Noria Pay: collect, pay out and refund across M-PESA, SasaPay and Paystack through one internal service instead of wiring a provider into every product.",
+    "type": "library",
+    "keywords": ["laravel", "payments", "mpesa", "sasapay", "paystack", "kenya", "noria"],
+    "license": "MIT",
+    "homepage": "https://github.com/norialabs/pay",
+    "support": {
+        "issues": "https://github.com/norialabs/pay/issues",
+        "source": "https://github.com/norialabs/pay"
+    },
+    "authors": [
+        {
+            "name": "Joseph Gitonga",
+            "email": "thekiharani@gmail.com",
+            "homepage": "https://github.com/thekiharani"
+        }
+    ],
+    "require": {
+        "php": "^8.3",
+        "illuminate/http": "^11.0|^12.0|^13.0",
+        "illuminate/support": "^11.0|^12.0|^13.0"
+    },
+    "require-dev": {
+        "orchestra/testbench": "^9.0|^10.0|^11.0",
+        "pestphp/pest": "^3.0|^4.0",
+        "larastan/larastan": "^3.0",
+        "laravel/pint": "^1.29"
+    },
+    "autoload": {
+        "psr-4": {
+            "NoriaLabs\\Pay\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "NoriaLabs\\Pay\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "analyse": "phpstan analyse --no-progress",
+        "format": "pint",
+        "format:test": "pint --test",
+        "test": "pest"
+    },
+    "extra": {
+        "laravel": {
+            "providers": ["NoriaLabs\\Pay\\Providers\\PayServiceProvider"],
+            "aliases": { "Pay": "NoriaLabs\\Pay\\Facades\\Pay" }
+        }
+    },
+    "config": {
+        "allow-plugins": { "pestphp/pest-plugin": true },
+        "sort-packages": true
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
