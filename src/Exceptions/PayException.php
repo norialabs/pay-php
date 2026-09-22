@@ -60,6 +60,12 @@ class PayException extends RuntimeException
 
     public function isRetryable(): bool
     {
+        // 409 is a conflict everywhere else. This one says the same key is still in flight on
+        // another request, which resolves by waiting.
+        if ($this->status === 409) {
+            return $this->errorCode === 'conflict';
+        }
+
         if (in_array($this->errorCode, [
             'outcome_unknown',
             'idempotency_mismatch',

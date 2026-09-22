@@ -95,3 +95,8 @@ surfaces in reconciliation.
 That package wraps the providers directly and this service uses it internally. This one talks
 to Noria Pay, which owns the persistence, the callbacks and the reconciliation that
 `norialabs/payments` deliberately leaves to you.
+
+Events are not delivered in order. Delivery runs in parallel and retries, so a later event can
+arrive first; order on `created_at`, which is when the event happened rather than when the
+attempt went out. Every payload also carries the transaction's status as it stood at delivery,
+so acting on that is safe whatever order they arrive in.
