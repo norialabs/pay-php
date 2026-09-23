@@ -218,6 +218,24 @@ it('sends empty metadata as a JSON object, which is what the contract takes', fu
         ->and($bodies[1])->toBe('{}');
 });
 
+it('issues, lists and revokes keys, and reads the account', function () {
+    Http::fake(['*' => Http::response(['object' => 'api_key'], 201)]);
+
+    Pay::apiKeys()->issue('ledger', ['read'], 'test', 10);
+    Pay::apiKeys()->issue('pos', ['charge']);
+    Pay::apiKeys()->list(['limit' => 5]);
+    Pay::apiKeys()->revoke('key/1');
+    Pay::account()->get();
+
+    Http::assertSent(fn (Request $request): bool => $request->method() === 'POST'
+        && json_decode($request->body(), true) === ['name' => 'ledger', 'scopes' => ['read'], 'environment' => 'test', 'rate_limit_per_second' => 10]);
+    Http::assertSent(fn (Request $request): bool => $request->method() === 'POST'
+        && json_decode($request->body(), true) === ['name' => 'pos', 'scopes' => ['charge'], 'environment' => 'live']);
+    Http::assertSent(fn (Request $request): bool => $request->method() === 'GET' && str_ends_with($request->url(), '/v1/api-keys?limit=5'));
+    Http::assertSent(fn (Request $request): bool => $request->method() === 'DELETE' && str_ends_with($request->url(), '/v1/api-keys/key%2F1'));
+    Http::assertSent(fn (Request $request): bool => $request->method() === 'GET' && str_ends_with($request->url(), '/v1/me'));
+});
+
 it('leaves a webhook description off the body rather than sending null', function () {
     Http::fake(['*' => Http::response(['object' => 'webhook_endpoint'])]);
 

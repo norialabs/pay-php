@@ -7,6 +7,8 @@ use Illuminate\Http\Client\Factory;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
 use NoriaLabs\Pay\Exceptions\PayException;
+use NoriaLabs\Pay\Resources\Account;
+use NoriaLabs\Pay\Resources\ApiKeys;
 use NoriaLabs\Pay\Resources\Charges;
 use NoriaLabs\Pay\Resources\PaymentLinks;
 use NoriaLabs\Pay\Resources\PaymentMethods;
@@ -76,6 +78,16 @@ class Pay
     public function webhooks(): Webhooks
     {
         return new Webhooks($this);
+    }
+
+    public function apiKeys(): ApiKeys
+    {
+        return new ApiKeys($this);
+    }
+
+    public function account(): Account
+    {
+        return new Account($this);
     }
 
     /**

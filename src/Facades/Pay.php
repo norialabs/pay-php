@@ -4,6 +4,8 @@ namespace NoriaLabs\Pay\Facades;
 
 use Illuminate\Support\Facades\Facade;
 use NoriaLabs\Pay\Pay as Client;
+use NoriaLabs\Pay\Resources\Account;
+use NoriaLabs\Pay\Resources\ApiKeys;
 use NoriaLabs\Pay\Resources\Charges;
 use NoriaLabs\Pay\Resources\PaymentLinks;
 use NoriaLabs\Pay\Resources\PaymentMethods;
@@ -22,6 +24,8 @@ use NoriaLabs\Pay\Resources\Webhooks;
  * @method static PaymentLinks paymentLinks()
  * @method static Statements statements()
  * @method static Webhooks webhooks()
+ * @method static ApiKeys apiKeys()
+ * @method static Account account()
  * @method static array<string, mixed> waitForSettlement(string $id, int $timeoutSeconds = 120, int $intervalSeconds = 3)
  *
  * @see Client
