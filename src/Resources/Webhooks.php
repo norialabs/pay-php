@@ -13,7 +13,7 @@ class Webhooks extends Resource
         return $this->pay->request('POST', '/v1/webhook-endpoints', [
             'url' => $url,
             'event_types' => $eventTypes,
-            'description' => $description,
+            ...($description === null ? [] : ['description' => $description]),
         ]);
     }
 

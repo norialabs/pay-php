@@ -58,14 +58,17 @@ class PayException extends RuntimeException
         return is_string($id) ? $id : null;
     }
 
+    /**
+     * 409 is a conflict everywhere else. The one that names a transaction says the same key is
+     * still in flight on another request, which resolves by waiting.
+     */
+    public function isInFlight(): bool
+    {
+        return $this->status === 409 && $this->errorCode === 'conflict' && $this->transactionId() !== null;
+    }
+
     public function isRetryable(): bool
     {
-        // 409 is a conflict everywhere else. This one says the same key is still in flight on
-        // another request, which resolves by waiting.
-        if ($this->status === 409) {
-            return $this->errorCode === 'conflict';
-        }
-
         if (in_array($this->errorCode, [
             'outcome_unknown',
             'idempotency_mismatch',
@@ -76,6 +79,10 @@ class PayException extends RuntimeException
             'insufficient_balance',
         ], true)) {
             return false;
+        }
+
+        if ($this->status === 409) {
+            return $this->isInFlight();
         }
 
         return $this->status === 0 || in_array($this->status, [408, 429, 500, 502, 503, 504], true);

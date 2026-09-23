@@ -28,10 +28,10 @@ class PayServiceProvider extends ServiceProvider implements DeferrableProvider
         });
 
         $this->app->singleton(WebhookVerifier::class, function (): WebhookVerifier {
-            /** @var array{webhook_secret: string, webhook_tolerance: int} $config */
+            /** @var array{webhook_secret: ?string, webhook_tolerance: int} $config */
             $config = $this->app->make('config')->get('noria-pay');
 
-            return new WebhookVerifier($config['webhook_secret'], $config['webhook_tolerance']);
+            return new WebhookVerifier($config['webhook_secret'] ?? '', $config['webhook_tolerance']);
         });
     }
 

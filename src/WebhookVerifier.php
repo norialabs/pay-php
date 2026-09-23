@@ -9,7 +9,11 @@ class WebhookVerifier
     public function __construct(
         protected readonly string $secret,
         protected readonly int $toleranceSeconds = 300,
-    ) {}
+    ) {
+        if (trim($secret) === '') {
+            throw new PayException('validation_error', 0, 'A webhook secret is required: an empty one accepts a signature anyone can compute');
+        }
+    }
 
     /**
      * Verify against the raw request body. Laravel's $request->all() has already decoded it,
@@ -55,10 +59,13 @@ class WebhookVerifier
             }
         }
 
-        if (! isset($parts['t'], $parts['v1']) || ! ctype_digit($parts['t'])) {
+        $timestamp = $parts['t'] ?? '';
+        $provided = $parts['v1'] ?? '';
+
+        if (strlen($timestamp) > 15 || ! ctype_digit($timestamp) || ! ctype_xdigit($provided)) {
             throw new PayException('validation_error', 400, 'Malformed pay-signature header');
         }
 
-        return [(int) $parts['t'], $parts['v1']];
+        return [(int) $timestamp, $provided];
     }
 }

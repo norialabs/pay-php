@@ -156,6 +156,86 @@ it('retries a 503 and returns the eventual success', function () {
     Http::assertSentCount(2);
 });
 
+it('does not repeat a write with no idempotency key on a 5xx, which may already have acted', function () {
+    Http::fake(['*' => Http::response(['error' => ['code' => 'internal_error', 'message' => 'down']], 503)]);
+
+    expect(fn () => Pay::paymentLinks()->create(['title' => 'Rent', 'amount_minor' => 1000]))->toThrow(PayException::class, 'down');
+    Http::assertSentCount(1);
+
+    expect(fn () => Pay::webhooks()->remove('01a0c5cd-0000-7000-8000-0000000000dd'))->toThrow(PayException::class, 'down');
+    Http::assertSentCount(2);
+
+    expect(fn () => Pay::transactions()->get('01a0c5cd-0000-7000-8000-0000000000aa'))->toThrow(PayException::class, 'down');
+    Http::assertSentCount(5);
+});
+
+it('waits out a keyed request still in flight, and nothing else that is a conflict', function () {
+    Http::fakeSequence()
+        ->push(['error' => ['code' => 'conflict', 'message' => 'still processing', 'details' => ['transaction_id' => '01a0c5cd-0000-7000-8000-0000000000aa']]], 409)
+        ->push(transaction(), 201)
+        ->push(['error' => ['code' => 'conflict', 'message' => 'A succeeded charge cannot be cancelled']], 409);
+
+    expect(Pay::charges()->create(CHARGE, 'k-in-flight')['status'])->toBe('processing');
+    Http::assertSentCount(2);
+
+    expect(fn () => Pay::charges()->cancel('01a0c5cd-0000-7000-8000-0000000000aa'))->toThrow(PayException::class, 'cannot be cancelled');
+    Http::assertSentCount(3);
+});
+
+it('never retries a code that must not be repeated, whatever its status', function () {
+    foreach (['outcome_unknown', 'idempotency_mismatch', 'provider_not_configured', 'insufficient_balance'] as $code) {
+        $exception = PayException::fromResponse(503, ['error' => ['code' => $code, 'message' => $code, 'details' => ['transaction_id' => 'tx']]]);
+        expect($exception->isRetryable())->toBeFalse();
+    }
+});
+
+it('reports a 2xx that is not JSON as an error rather than an empty success', function () {
+    Http::fake(['*' => Http::response('<html>ok?</html>', 200, ['content-type' => 'text/html'])]);
+
+    try {
+        Pay::transactions()->get('01a0c5cd-0000-7000-8000-0000000000aa');
+        $this->fail('expected the response to be refused');
+    } catch (PayException $exception) {
+        expect($exception->errorCode)->toBe('internal_error')
+            ->and($exception->getMessage())->toBe('The response was not JSON');
+    }
+});
+
+it('sends empty metadata as a JSON object, which is what the contract takes', function () {
+    Http::fake(['*' => Http::response(transaction(), 201)]);
+
+    Pay::charges()->create([...CHARGE, 'metadata' => []], 'k-meta');
+    Pay::paymentLinks()->update('01a0c5cd-0000-7000-8000-0000000000cc', []);
+
+    $bodies = [];
+    Http::assertSent(function (Request $request) use (&$bodies): bool {
+        $bodies[] = $request->body();
+
+        return true;
+    });
+
+    expect($bodies[0])->toContain('"metadata":{}')
+        ->and($bodies[1])->toBe('{}');
+});
+
+it('leaves a webhook description off the body rather than sending null', function () {
+    Http::fake(['*' => Http::response(['object' => 'webhook_endpoint'])]);
+
+    Pay::webhooks()->create('https://hooks.test/pay');
+
+    Http::assertSent(fn (Request $request): bool => json_decode($request->body(), true) === ['url' => 'https://hooks.test/pay', 'event_types' => []]);
+});
+
+it('keeps polling through an unknown outcome until it resolves', function () {
+    Http::fakeSequence()
+        ->push(transaction(['status' => 'unknown']), 200)
+        ->push(transaction(['status' => 'unknown']), 200)
+        ->push(transaction(['status' => 'succeeded']), 200);
+
+    expect(Pay::waitForSettlement('01a0c5cd-0000-7000-8000-0000000000aa', 30, 0)['status'])->toBe('succeeded');
+    Http::assertSentCount(3);
+});
+
 it('waits for settlement and stops as soon as it is terminal', function () {
     Http::fakeSequence()
         ->push(transaction(), 200)
@@ -305,5 +385,22 @@ describe('webhook verification', function () {
     it('rejects a malformed header', function () use ($body) {
         expect(fn () => app(WebhookVerifier::class)->verify($body, 'nonsense'))
             ->toThrow(PayException::class, 'Malformed pay-signature header');
+    });
+
+    it('answers every crafted header with a signature error, never a crash', function () use ($body) {
+        foreach (['t=²,v1=abc', 't=1790000000,v1=é', 't=1e9,v1=ab', 't=,v1=ab', '=,=', 't=1790000000', 't='.str_repeat('9', 400).',v1=ab'] as $header) {
+            expect(fn () => app(WebhookVerifier::class)->verify($body, $header, 1790000000))
+                ->toThrow(PayException::class, 'Malformed pay-signature header');
+        }
+    });
+
+    it('refuses to verify against an empty or blank secret', function () {
+        expect(fn () => new WebhookVerifier(''))->toThrow(PayException::class, 'A webhook secret is required')
+            ->and(fn () => new WebhookVerifier('   '))->toThrow(PayException::class, 'A webhook secret is required');
+
+        config()->set('noria-pay.webhook_secret', null);
+        app()->forgetInstance(WebhookVerifier::class);
+
+        expect(fn () => app(WebhookVerifier::class))->toThrow(PayException::class, 'A webhook secret is required');
     });
 });

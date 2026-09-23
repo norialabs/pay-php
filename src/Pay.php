@@ -5,6 +5,7 @@ namespace NoriaLabs\Pay;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Factory;
 use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Http\Client\Response;
 use NoriaLabs\Pay\Exceptions\PayException;
 use NoriaLabs\Pay\Resources\Charges;
 use NoriaLabs\Pay\Resources\PaymentLinks;
@@ -14,10 +15,16 @@ use NoriaLabs\Pay\Resources\Refunds;
 use NoriaLabs\Pay\Resources\Statements;
 use NoriaLabs\Pay\Resources\Transactions;
 use NoriaLabs\Pay\Resources\Webhooks;
+use stdClass;
 
 class Pay
 {
     public const DEFAULT_BASE_URL = 'https://pay.noria.co.ke';
+
+    /**
+     * `unknown` is not here: the poller resolves it, and a caller waiting stops only on the answer.
+     */
+    public const TERMINAL_STATUSES = ['succeeded', 'failed', 'cancelled', 'expired', 'reversed'];
 
     public function __construct(
         protected readonly Factory $http,
@@ -83,9 +90,7 @@ class Pay
 
         while (true) {
             $transaction = $this->transactions()->get($id);
-            $status = is_string($transaction['status'] ?? null) ? $transaction['status'] : '';
-
-            if ($status !== 'pending' && $status !== 'processing') {
+            if (in_array($transaction['status'] ?? null, self::TERMINAL_STATUSES, true)) {
                 return $transaction;
             }
 
@@ -106,6 +111,9 @@ class Pay
     {
         $attempt = 0;
         $last = null;
+        // A write carrying an Idempotency-Key replays on the service side, so repeating it is
+        // safe. Without one, a dropped connection or a 5xx may already have moved money.
+        $repeatable = $method === 'GET' || isset($headers['Idempotency-Key']);
 
         while ($attempt <= $this->retries) {
             if ($attempt > 0) {
@@ -116,13 +124,11 @@ class Pay
 
             try {
                 $response = $this->pending($headers, $body !== null)
-                    ->send($method, $this->url($path), $body === null ? [] : ['json' => $body]);
+                    ->send($method, $this->url($path), $body === null ? [] : ['json' => $this->jsonBody($body)]);
             } catch (ConnectionException $exception) {
                 $last = PayException::network($exception->getMessage(), $exception);
 
-                // A write carrying an Idempotency-Key replays on the service side, so repeating
-                // it is safe. Without one, a dropped connection may already have moved money.
-                if (! isset($headers['Idempotency-Key']) && $method !== 'GET') {
+                if (! $repeatable) {
                     throw $last;
                 }
 
@@ -133,16 +139,19 @@ class Pay
                 return [];
             }
 
-            /** @var array<string, mixed> $decoded */
-            $decoded = $response->json() ?? [];
+            $decoded = $this->decode($response);
 
             if ($response->successful()) {
+                if ($decoded === null) {
+                    throw new PayException('internal_error', $response->status(), 'The response was not JSON');
+                }
+
                 return $decoded;
             }
 
-            $last = PayException::fromResponse($response->status(), $decoded);
+            $last = PayException::fromResponse($response->status(), $decoded ?? []);
 
-            if (! $last->isRetryable()) {
+            if (! $last->isRetryable() || (! $repeatable && $last->status >= 500)) {
                 throw $last;
             }
         }
@@ -158,6 +167,40 @@ class Pay
         $filtered = array_filter($parameters, static fn (mixed $value): bool => $value !== null && $value !== '');
 
         return $filtered === [] ? '' : '?'.http_build_query($filtered);
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    protected function decode(Response $response): ?array
+    {
+        if (trim($response->body()) === '') {
+            return [];
+        }
+
+        $decoded = json_decode($response->body(), true);
+
+        /** @var array<string, mixed>|null */
+        return is_array($decoded) ? $decoded : null;
+    }
+
+    /**
+     * PHP cannot tell an empty map from an empty list, and the contract takes metadata as an object.
+     *
+     * @param  array<string, mixed>  $body
+     * @return array<string, mixed>|stdClass
+     */
+    protected function jsonBody(array $body): array|stdClass
+    {
+        if ($body === []) {
+            return new stdClass;
+        }
+
+        if (($body['metadata'] ?? null) === []) {
+            $body['metadata'] = new stdClass;
+        }
+
+        return $body;
     }
 
     /**
